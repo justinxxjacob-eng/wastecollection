@@ -732,23 +732,40 @@ def notif_dashboard():
     conn.close()
     return render_template_string(NOTIF_HTML, notifs=notifs, stats=stats)
 
-@app.route('/collector')
+@app.route('/collector/log', methods=['POST'])
 @login_required
 @role_required('collector')
-def collector_dashboard():
-    conn = get_db()
-    today = datetime.now().strftime('%A')
+def log_collection():
+    zone_id = request.form.get('zone_id')
+    status = request.form.get('status')
+    remarks = request.form.get('remarks','')
     cid = session['user_id']
-    assigned = conn.execute("SELECT cs.*, z.zone_name, z.description, z.zone_id FROM collection_schedules cs JOIN zones z ON cs.zone_id=z.zone_id WHERE cs.collection_day=? AND cs.status='active'", (today,)).fetchall()
-    all_zones = conn.execute("SELECT * FROM zones").fetchall()
-    rl = conn.execute("SELECT cl.*, z.zone_name FROM collection_logs cl JOIN zones z ON cl.zone_id=z.zone_id WHERE cl.collector_id=? ORDER BY cl.collected_at DESC LIMIT 20", (cid,)).fetchall()
-    st = conn.execute("SELECT status, COUNT(*) as cnt FROM collection_logs WHERE collector_id=? AND date(collected_at)=date('now') GROUP BY status", (cid,)).fetchall()
-    zone_predictions = {}
-    for a in assigned:
-        preds = conn.execute("""SELECT predicted_date, waste_level, confidence_score FROM predictions WHERE zone_id=? AND predicted_date >= date('now') ORDER BY predicted_date LIMIT 7""", (a['zone_id'],)).fetchall()
-        zone_predictions[a['zone_id']] = [dict(p) for p in preds]
+    bc = request.form.get('bin_count','0')
+    bt = request.form.get('bin_type','medium_drum')
+    fl = request.form.get('fill_level','full')
+    ev = estimate_waste_volume(bc, bt, fl)
+    conn = get_db()
+    
+    # Get the schedule_id for this zone (any schedule)
+    sched = conn.execute("SELECT schedule_id FROM collection_schedules WHERE zone_id=? LIMIT 1", (zone_id,)).fetchone()
+    sid = sched['schedule_id'] if sched else 1
+    
+    # INSERT with all required fields
+    conn.execute("""
+        INSERT INTO collection_logs 
+        (schedule_id, collector_id, zone_id, status, remarks, bin_count, bin_type, fill_level, collected_at) 
+        VALUES (?,?,?,?,?,?,?,?,?)
+    """, (sid, cid, zone_id, status, remarks, bc, bt, fl, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+    
+    conn.execute("""
+        INSERT INTO waste_data 
+        (zone_id, date, waste_volume, collection_status, bin_count, bin_type, fill_level) 
+        VALUES (?,?,?,?,?,?,?)
+    """, (zone_id, datetime.now().strftime('%Y-%m-%d'), ev, status, bc, bt, fl))
+    
+    conn.commit()
     conn.close()
-    return render_template_string(COLLECTOR_HTML, assigned=assigned, all_zones=all_zones, recent_logs=rl, stats=st, today=today, zone_predictions=zone_predictions)
+    return redirect(url_for('collector_dashboard'))
 
 @app.route('/collector/log', methods=['POST'])
 @login_required
