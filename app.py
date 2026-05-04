@@ -736,57 +736,62 @@ def notif_dashboard():
 @login_required
 @role_required('collector')
 def log_collection():
-    zone_id = request.form.get('zone_id')
-    status = request.form.get('status')
-    remarks = request.form.get('remarks','')
-    cid = session['user_id']
-    bc = request.form.get('bin_count','0')
-    bt = request.form.get('bin_type','medium_drum')
-    fl = request.form.get('fill_level','full')
-    ev = estimate_waste_volume(bc, bt, fl)
-    conn = get_db()
-    
-    # Get the schedule_id for this zone (any schedule)
-    sched = conn.execute("SELECT schedule_id FROM collection_schedules WHERE zone_id=? LIMIT 1", (zone_id,)).fetchone()
-    sid = sched['schedule_id'] if sched else 1
-    
-    # INSERT with all required fields
-    conn.execute("""
-        INSERT INTO collection_logs 
-        (schedule_id, collector_id, zone_id, status, remarks, bin_count, bin_type, fill_level, collected_at) 
-        VALUES (?,?,?,?,?,?,?,?,?)
-    """, (sid, cid, zone_id, status, remarks, bc, bt, fl, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-    
-    conn.execute("""
-        INSERT INTO waste_data 
-        (zone_id, date, waste_volume, collection_status, bin_count, bin_type, fill_level) 
-        VALUES (?,?,?,?,?,?,?)
-    """, (zone_id, datetime.now().strftime('%Y-%m-%d'), ev, status, bc, bt, fl))
-    
-    conn.commit()
-    conn.close()
-    return redirect(url_for('collector_dashboard'))
-
-@app.route('/collector/log', methods=['POST'])
-@login_required
-@role_required('collector')
-def log_collection():
-    zone_id = request.form.get('zone_id')
-    status = request.form.get('status')
-    remarks = request.form.get('remarks','')
-    cid = session['user_id']
-    bc = request.form.get('bin_count','0')
-    bt = request.form.get('bin_type','medium_drum')
-    fl = request.form.get('fill_level','full')
-    ev = estimate_waste_volume(bc, bt, fl)
-    conn = get_db()
-    sched = conn.execute("SELECT schedule_id FROM collection_schedules WHERE zone_id=? LIMIT 1", (zone_id,)).fetchone()
-    sid = sched['schedule_id'] if sched else 1
-    conn.execute("INSERT INTO collection_logs (schedule_id,collector_id,zone_id,status,remarks,bin_count,bin_type,fill_level,collected_at) VALUES (?,?,?,?,?,?,?,?,?)", (sid, cid, zone_id, status, remarks, bc, bt, fl, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-    conn.execute("INSERT INTO waste_data (zone_id,date,waste_volume,collection_status,bin_count,bin_type,fill_level) VALUES (?,?,?,?,?,?,?)", (zone_id, datetime.now().strftime('%Y-%m-%d'), ev, status, bc, bt, fl))
-    conn.commit()
-    conn.close()
-    return redirect(url_for('collector_dashboard'))
+    try:
+        zone_id = int(request.form.get('zone_id'))
+        status = request.form.get('status')
+        remarks = request.form.get('remarks','')
+        cid = session['user_id']
+        bc = int(request.form.get('bin_count','0'))
+        bt = request.form.get('bin_type','medium_drum')
+        fl = request.form.get('fill_level','full')
+        
+        # Calculate estimated volume
+        ev = estimate_waste_volume(bc, bt, fl)
+        
+        conn = get_db()
+        
+        # Get schedule_id for this zone
+        sched = conn.execute(
+            "SELECT schedule_id FROM collection_schedules WHERE zone_id=? LIMIT 1", 
+            (zone_id,)
+        ).fetchone()
+        sid = sched['schedule_id'] if sched else 1
+        
+        # Get current timestamp
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        # Insert into collection_logs
+        conn.execute("""
+            INSERT INTO collection_logs 
+            (schedule_id, collector_id, zone_id, status, remarks, bin_count, bin_type, fill_level, collected_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (sid, cid, zone_id, status, remarks, bc, bt, fl, now))
+        
+        # Insert into waste_data
+        conn.execute("""
+            INSERT INTO waste_data 
+            (zone_id, date, waste_volume, collection_status, bin_count, bin_type, fill_level) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (zone_id, today, ev, status, bc, bt, fl))
+        
+        # Get zone name for redirect message
+        zone_info = conn.execute("SELECT zone_name FROM zones WHERE zone_id=?", (zone_id,)).fetchone()
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✅ LOG SAVED: Zone {zone_info['zone_name'] if zone_info else zone_id} - {status} - {bc}x {bt} ({fl})")
+        
+        return redirect(url_for('collector_dashboard'))
+        
+    except Exception as e:
+        print(f"❌ ERROR SAVING LOG: {str(e)}")
+        try:
+            conn.close()
+        except:
+            pass
+        return redirect(url_for('collector_dashboard'))
 
 @app.route('/resident')
 @login_required
