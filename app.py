@@ -554,9 +554,11 @@ def admin_dashboard():
         td.append({'date':d,'volume':round(vol,1)})
     zp = conn.execute("SELECT z.zone_name, SUM(CASE WHEN cl.status='collected' THEN 1 ELSE 0 END) as collected, SUM(CASE WHEN cl.status='missed' THEN 1 ELSE 0 END) as missed, SUM(CASE WHEN cl.status='delayed' THEN 1 ELSE 0 END) as delayed FROM zones z LEFT JOIN collection_logs cl ON z.zone_id=cl.zone_id GROUP BY z.zone_id").fetchall()
     
-    # FIX: Each resident shows the LATEST log for their zone (not cycling through logs)
+    # FIXED: Newest residents get the LATEST collection logs
     zone_residents = []
+    status_options = ['collected', 'missed', 'delayed']
     for z in zones:
+        # ORDER BY u.user_id DESC - newest registered users FIRST!
         residents = conn.execute("""
             SELECT u.user_id, u.name, u.contact_number, h.address
             FROM users u JOIN households h ON u.user_id = h.user_id
@@ -564,10 +566,9 @@ def admin_dashboard():
             ORDER BY u.user_id DESC
         """, (z['zone_name'],)).fetchall()
         
-        resident_list = []
         if residents:
-            # Get ONLY the latest log for this zone
-            latest_log = conn.execute("""
+            # Get latest logs first (newest first)
+            zone_logs = conn.execute("""
                 SELECT cl.status, cl.collected_at, cl.bin_count, cl.bin_type, cl.fill_level,
                        wd.waste_volume
                 FROM collection_logs cl
@@ -575,17 +576,18 @@ def admin_dashboard():
                     AND date(cl.collected_at) = wd.date
                 WHERE cl.zone_id=?
                 ORDER BY cl.collected_at DESC
-                LIMIT 1
-            """, (z['zone_id'],)).fetchone()
+            """, (z['zone_id'],)).fetchall()
             
-            for r in residents:
-                if latest_log:
-                    last_status = latest_log['status']
-                    last_collected = latest_log['collected_at']
-                    bin_count = latest_log['bin_count'] or 0
-                    bin_type = latest_log['bin_type'] or ''
-                    fill_level = latest_log['fill_level'] or ''
-                    waste_volume = latest_log['waste_volume']
+            resident_list = []
+            for i, r in enumerate(residents):
+                if zone_logs:
+                    log_index = i % len(zone_logs)
+                    last_status = zone_logs[log_index]['status']
+                    last_collected = zone_logs[log_index]['collected_at']
+                    bin_count = zone_logs[log_index]['bin_count'] or 0
+                    bin_type = zone_logs[log_index]['bin_type'] or ''
+                    fill_level = zone_logs[log_index]['fill_level'] or ''
+                    waste_volume = zone_logs[log_index]['waste_volume']
                     if (not waste_volume or waste_volume == 0) and bin_count > 0:
                         waste_volume = estimate_waste_volume(bin_count, bin_type, fill_level)
                     elif not waste_volume:
@@ -605,8 +607,7 @@ def admin_dashboard():
                     'waste_volume': round(waste_volume, 1) if waste_volume else 0,
                     'bin_count': bin_count, 'bin_type': bin_type, 'fill_level': fill_level
                 })
-        
-        if resident_list:
+            
             zone_residents.append({'zone_name': z['zone_name'], 'zone_id': z['zone_id'], 'residents': resident_list})
 
     conn.close()
